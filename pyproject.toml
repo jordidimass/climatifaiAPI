@@ -1,0 +1,14 @@
+[project]
+name = "climatifai-api"
+version = "0.1.0"
+description = "Climatifai / AgroRisk — agricultural risk intelligence API"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.115",
+    "uvicorn>=0.30",
+    "httpx>=0.28",
+    "pandas>=2.2",
+    "geopandas>=1.0",
+    "pyarrow>=16.0",
+    "python-dotenv>=1.0",
+]
