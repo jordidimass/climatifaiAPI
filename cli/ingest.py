@@ -188,6 +188,7 @@ async def cmd_firms_hotspots(args: argparse.Namespace) -> int:
             return 1
 
         async def run_one(lat: float, lon: float, location_id: UUID | None) -> None:
+            days_eff = firms_svc.clamp_firms_area_days(args.days)
             job = IngestionJob(
                 source_id=fid,
                 job_type="firms_hotspots_area",
@@ -196,7 +197,8 @@ async def cmd_firms_hotspots(args: argparse.Namespace) -> int:
                     "lat": lat,
                     "lon": lon,
                     "radius_km": args.radius_km,
-                    "days": args.days,
+                    "days": days_eff,
+                    "days_requested": args.days,
                     "source": args.source,
                     "location_id": str(location_id) if location_id else None,
                 },
@@ -213,7 +215,7 @@ async def cmd_firms_hotspots(args: argparse.Namespace) -> int:
                 days=args.days,
                 source=args.source,
             )
-            params, qk = firms_hotspots_key(lat, lon, args.radius_km, args.days, args.source)
+            params, qk = firms_hotspots_key(lat, lon, args.radius_km, days_eff, args.source)
             await upsert_raw_payload(
                 session,
                 source_id=fid,
@@ -422,7 +424,12 @@ def main() -> None:
     )
     p_f.add_argument("--lon", type=float, default=None)
     p_f.add_argument("--radius-km", type=float, default=100)
-    p_f.add_argument("--days", type=int, default=7)
+    p_f.add_argument(
+        "--days",
+        type=int,
+        default=5,
+        help="Ventana FIRMS Area API: solo 1–5 días (valores mayores se limitan a 5)",
+    )
     p_f.add_argument("--source", default="VIIRS_SNPP_NRT")
     p_f.add_argument("--sleep-ms", type=int, default=400, help="Pausa entre ubicaciones (solo bulk)")
     p_f.add_argument("--limit", type=int, default=0, help="0 = sin límite (solo bulk)")

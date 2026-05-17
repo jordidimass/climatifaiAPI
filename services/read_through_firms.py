@@ -32,7 +32,8 @@ async def hotspots_with_cache(
     firms_slug: str = "nasa_firms",
     firms_uuid: UUID | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
-    params, qk = firms_hotspots_key(lat, lon, radius_km, days, source)
+    days_eff = firms.clamp_firms_area_days(days)
+    params, qk = firms_hotspots_key(lat, lon, radius_km, days_eff, source)
     firm_pol = policies()["firms"]
     meta: dict[str, Any] = {"hotspots": None}
 
@@ -43,7 +44,7 @@ async def hotspots_with_cache(
             return fresh.body["hotspots"], meta  # type: ignore[no-any-return]
 
     try:
-        items = await firms.get_hotspots(lat, lon, radius_km=radius_km, days=days, source=source)
+        items = await firms.get_hotspots(lat, lon, radius_km=radius_km, days=days_eff, source=source)
         if session is not None and firms_uuid is not None:
             row = await upsert_raw_payload(
                 session,

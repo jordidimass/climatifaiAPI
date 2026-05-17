@@ -15,7 +15,7 @@ async def fire_hotspots(
     lat: float = Query(..., description="Center latitude"),
     lon: float = Query(..., description="Center longitude"),
     radius_km: float = Query(100, description="Search radius in km"),
-    days: int = Query(7, description="Days of data (max 10 for NRT)"),
+    days: int = Query(5, ge=1, le=5, description="Días hacia atrás (FIRMS Area solo admite 1–5)"),
     source: str = Query("VIIRS_SNPP_NRT", description="FIRMS data source"),
     db: OptionalDbSession = None,
 ):
@@ -68,7 +68,7 @@ async def fire_risk(
             lat=lat,
             lon=lon,
             radius_km=radius_km,
-            days=7,
+            days=5,
             source="VIIRS_SNPP_NRT",
             firms_uuid=firms_id,
         )
@@ -99,5 +99,5 @@ async def list_fires(
     firms_id = None
     if db is not None:
         firms_id = await resolve_source_uuid(db, "nasa_firms")
-    hotspots, _fresh = await hotspots_with_cache(db, lat=lat, lon=lon, radius_km=100, days=7, source="VIIRS_SNPP_NRT", firms_uuid=firms_id)
+    hotspots, _fresh = await hotspots_with_cache(db, lat=lat, lon=lon, radius_km=100, days=5, source="VIIRS_SNPP_NRT", firms_uuid=firms_id)
     return {"fires": hotspots}

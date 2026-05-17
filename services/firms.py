@@ -11,6 +11,13 @@ import httpx
 
 _FIRMS_BASE = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 _TIMEOUT = httpx.Timeout(30.0)
+# FIRMS Area API: DAY_RANGE solo 1..5 (https://firms.modaps.eosdis.nasa.gov/api/area/)
+FIRMS_AREA_DAY_RANGE_MAX = 5
+
+
+def clamp_firms_area_days(days: int) -> int:
+    """Valores fuera de 1..5 hacen que FIRMS responda HTTP 400."""
+    return max(1, min(int(days), FIRMS_AREA_DAY_RANGE_MAX))
 
 
 def _normalize_firms_api_key(raw: str) -> str:
@@ -32,11 +39,13 @@ async def get_hotspots(
     lat: float,
     lon: float,
     radius_km: float = 100,
-    days: int = 7,
+    days: int = 5,
     source: str = "VIIRS_SNPP_NRT",
 ) -> list[dict]:
     """
     Fetch active fire hotspots within radius_km of (lat, lon) for the past `days` days.
+
+    La API Area solo admite ventanas de 1 a 5 días; valores mayores se tratan como 5.
 
     source options: VIIRS_SNPP_NRT, MODIS_NRT, VIIRS_NOAA20_NRT
     Returns a list of hotspot dicts.
@@ -45,10 +54,12 @@ async def get_hotspots(
     if not key:
         return _mock_hotspots(lat, lon)
 
+    days_eff = clamp_firms_area_days(days)
+
     # FIRMS area API uses a bounding box derived from the center + radius
     deg = radius_km / 111.0
     bbox = f"{lon - deg},{lat - deg},{lon + deg},{lat + deg}"
-    url = f"{_FIRMS_BASE}/{key}/{source}/{bbox}/{days}"
+    url = f"{_FIRMS_BASE}/{key}/{source}/{bbox}/{days_eff}"
 
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         r = await client.get(url)

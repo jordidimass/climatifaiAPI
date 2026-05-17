@@ -59,6 +59,8 @@ Para la API FastAPI, **sin `DATABASE_URL`** no se activa Postgres (read-through 
 
 Con `DATABASE_URL`, el API persiste/leé `raw_payloads` según TTL (`OPENMETEO_CACHE_MAX_AGE_SEC`, `ADVISOR_CACHE_MAX_AGE_SEC`, `FIRMS_CACHE_MAX_AGE_SEC`).
 
+NASA FIRMS (Area API): define `FIRMS_API_KEY` (MAP key desde [FIRMS map_key](https://firms.modaps.eosdis.nasa.gov/api/map_key/)). El parámetro de ventana temporal **solo admite 1–5 días** en la URL oficial; valores mayores provocan HTTP 400 y el cliente las limita a 5.
+
 ## Producción — Supabase (CLI + proyecto remoto)
 
 En la raíz del API (`Untitled/climatifaiAPI/`) hay carpeta [`supabase/`](supabase/) generada con:
