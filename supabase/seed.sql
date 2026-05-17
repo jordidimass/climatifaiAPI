@@ -1,0 +1,1 @@
+-- Seeds opcionales (vacío hasta que defináis datos iniciales vía CLI Supabase).
