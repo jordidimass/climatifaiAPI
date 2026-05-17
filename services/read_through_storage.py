@@ -67,6 +67,7 @@ async def upsert_raw_payload(
     http_status: int | None,
     body: dict | list | str | float | int | bool | None,
     job_id: UUID | None = None,
+    location_id: UUID | None = None,
     is_stale: bool = False,
     content_hash: str | None = None,
     expires_at: datetime | None = None,
@@ -83,6 +84,7 @@ async def upsert_raw_payload(
         existing.http_status = http_status
         existing.body = body_val  # type: ignore[assignment]
         existing.job_id = job_id
+        existing.location_id = location_id if location_id is not None else existing.location_id
         existing.fetched_at = utcnow()
         existing.expires_at = expires_at
         existing.is_stale = is_stale
@@ -94,6 +96,7 @@ async def upsert_raw_payload(
     payload = RawPayload(
         source_id=source_id,
         job_id=job_id,
+        location_id=location_id,
         query_key=query_key,
         params=params,
         http_status=http_status,

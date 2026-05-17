@@ -50,6 +50,12 @@ async def agri_advisor(
     lon: float = Query(..., description="Longitude"),
     crop_id: str = Query(..., description="Crop ID from crop_requirements.json"),
     season: str = Query("annual", description="Season: lluvias, secas, annual"),
+    country_iso: str | None = Query(
+        None,
+        description="Requerido con LOCATION_LAZY_UPSERT=1 para registrar locations sintéticas (LATAM, sin BR).",
+        min_length=2,
+        max_length=2,
+    ),
     db: OptionalDbSession = None,
 ):
     """
@@ -67,6 +73,7 @@ async def agri_advisor(
             season=season,
             hist_start_year=hist_sy,
             hist_end_year=hist_ey,
+            lazy_country_iso=country_iso,
         )
     except Exception as exc:
         raise _openmeteo_http_exception(exc) from exc
@@ -82,6 +89,12 @@ async def agri_climate(
     from_year: int = Query(1991, alias="from", description="Start year (historical)"),
     to_year: int = Query(2020, alias="to", description="End year (historical)"),
     scenario: str = Query("SSP3-7.0", description="CMIP6 scenario for projection"),
+    country_iso: str | None = Query(
+        None,
+        description="Opcional LOCATION_LAZY_UPSERT: ISO3166-1 alpha2 (LATAM, sin BR).",
+        min_length=2,
+        max_length=2,
+    ),
     db: OptionalDbSession = None,
 ):
     """
@@ -98,6 +111,7 @@ async def agri_climate(
             start_year=from_year,
             end_year=to_year,
             om_uuid=om_id,
+            lazy_country_iso=country_iso,
         )
         proj_df, pmeta = await load_projection_with_cache(
             db,
@@ -105,6 +119,7 @@ async def agri_climate(
             lon=lon,
             scenario=scenario,
             om_uuid=om_id,
+            lazy_country_iso=country_iso,
         )
     except Exception as exc:
         raise _openmeteo_http_exception(exc) from exc
