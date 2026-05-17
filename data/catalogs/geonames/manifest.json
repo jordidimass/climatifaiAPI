@@ -1,0 +1,8 @@
+{
+  "dataset": "geonames-allCountries",
+  "base_url": "https://download.geonames.org/export/dump/allCountries.zip",
+  "verified_sha256": null,
+  "notes": "Modo rápido: ZIP por país {CC}.zip (por defecto). verified_sha256 solo aplica con --full-dump o allCountries local. Rellena verified_sha256 después de sha256sum sobre allCountries.zip si lo usás.",
+  "docs": "docs/locations.md",
+  "output_csv_relative": "data/catalogs/geonames/locations.csv"
+}

@@ -32,3 +32,7 @@ coverage.xml
 .vscode/
 .idea/
 *.DS_Store
+
+# GeoNames artefacts (heavy; regenerated locally — see docs/locations.md)
+data/catalogs/geonames/.cache/
+data/catalogs/geonames/locations.csv
