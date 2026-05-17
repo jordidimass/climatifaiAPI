@@ -6,13 +6,26 @@ API key required: register free at https://earthdata.nasa.gov
 from __future__ import annotations
 
 import os
-from datetime import date, timedelta
 
 import httpx
 
 _FIRMS_BASE = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
-_API_KEY = os.getenv("FIRMS_API_KEY", "")
 _TIMEOUT = httpx.Timeout(30.0)
+
+
+def _normalize_firms_api_key(raw: str) -> str:
+    """
+    Limpia el MAP_KEY Earthdata: whitespace, BOM y comillas tipográficas que suelen
+    colarse al copiar/pegar o desde editores (.env con “smart quotes”) y rompen la URL FIRMS (400).
+    """
+    s = (raw or "").strip().strip("\ufeff")
+    for ch in ("\u201c", "\u201d", "\u2018", "\u2019", "\u00a0"):
+        s = s.replace(ch, "")
+    return s.strip()
+
+
+def _firms_api_key() -> str:
+    return _normalize_firms_api_key(os.getenv("FIRMS_API_KEY", ""))
 
 
 async def get_hotspots(
@@ -28,16 +41,14 @@ async def get_hotspots(
     source options: VIIRS_SNPP_NRT, MODIS_NRT, VIIRS_NOAA20_NRT
     Returns a list of hotspot dicts.
     """
-    if not _API_KEY:
+    key = _firms_api_key()
+    if not key:
         return _mock_hotspots(lat, lon)
 
     # FIRMS area API uses a bounding box derived from the center + radius
     deg = radius_km / 111.0
     bbox = f"{lon - deg},{lat - deg},{lon + deg},{lat + deg}"
-    end = date.today()
-    start = end - timedelta(days=min(days, 10))
-
-    url = f"{_FIRMS_BASE}/{_API_KEY}/{source}/{bbox}/{days}"
+    url = f"{_FIRMS_BASE}/{key}/{source}/{bbox}/{days}"
 
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         r = await client.get(url)
