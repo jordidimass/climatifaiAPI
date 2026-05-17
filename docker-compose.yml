@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: climatifai
+    ports:
+      - "5432:5432"
+    volumes:
+      - climatifai_pg:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - climatifai_qdrant:/qdrant/storage
+
+volumes:
+  climatifai_pg:
+  climatifai_qdrant:
