@@ -28,6 +28,53 @@ def _checksum(path: Path) -> str:
     return h.hexdigest()
 
 
+async def load_bulk_location_rows(session, args: argparse.Namespace, repo: Path) -> list[tuple[float, float, UUID, str]]:
+    """Misma selección que ``locations-backfill-openmeteo``: tabla ``locations`` o CSV + DB."""
+    import csv
+
+    from sqlalchemy import asc, select
+
+    from db.models import Location
+
+    iso_allow = {c.strip().upper() for c in args.countries.split(",") if c.strip()}
+    csv_path = Path(args.locations_csv) if getattr(args, "locations_csv", None) else None
+
+    loc_rows: list[tuple[float, float, UUID, str]] = []
+    if csv_path:
+        csv_full = csv_path if csv_path.is_absolute() else repo / csv_path
+        if not csv_full.exists():
+            raise FileNotFoundError(str(csv_full))
+        with csv_full.open(encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            idx = 0
+            for r in reader:
+                if iso_allow and r.get("country_iso", "").strip().upper() not in iso_allow:
+                    continue
+                gid = int(r["geonames_id"])
+                q = await session.execute(select(Location).where(Location.geonames_id == gid))
+                loc_row = q.scalar_one_or_none()
+                if loc_row is None:
+                    print(f"No hay locations.id para geonames_id={gid} — ejecute scripts/load_locations_csv.py", flush=True)
+                    continue
+                loc_rows.append((float(loc_row.lat), float(loc_row.lon), loc_row.id, loc_row.name))
+                idx += 1
+                if args.limit > 0 and idx >= args.limit:
+                    break
+    else:
+        q = select(Location).order_by(asc(Location.country_iso), asc(Location.name))
+        if iso_allow:
+            q = q.where(Location.country_iso.in_(iso_allow))
+        if args.start_offset > 0:
+            q = q.offset(args.start_offset)
+        if args.limit > 0:
+            q = q.limit(args.limit)
+        r = await session.execute(q)
+        for loc_row in r.scalars().all():
+            loc_rows.append((float(loc_row.lat), float(loc_row.lon), loc_row.id, loc_row.name))
+
+    return loc_rows
+
+
 async def cmd_openmeteo_yearly(args: argparse.Namespace) -> int:
     from sqlalchemy import select
 
@@ -67,18 +114,11 @@ async def cmd_openmeteo_yearly(args: argparse.Namespace) -> int:
 
 
 async def cmd_locations_backfill_openmeteo(args: argparse.Namespace) -> int:
-    import csv
-
-    from sqlalchemy import asc, select
-
-    from db.models import Location
     from db.session import session_scope
     from services.ingest_openmeteo import run_openmeteo_archive_yearly
     from services.read_through_agri import resolve_source_uuid
 
     load_dotenv()
-    iso_allow = {c.strip().upper() for c in args.countries.split(",") if c.strip()}
-    csv_path = Path(args.locations_csv) if args.locations_csv else None
     repo = Path(__file__).resolve().parents[1]
 
     async with session_scope() as session:
@@ -89,39 +129,11 @@ async def cmd_locations_backfill_openmeteo(args: argparse.Namespace) -> int:
         if oid is None:
             return 1
 
-        loc_rows: list[tuple[float, float, UUID | None, str]] = []
-        if csv_path:
-            csv_full = csv_path if csv_path.is_absolute() else repo / csv_path
-            if not csv_full.exists():
-                print(f"CSV no encontrado: {csv_full}", flush=True)
-                return 1
-            with csv_full.open(encoding="utf-8", newline="") as fh:
-                reader = csv.DictReader(fh)
-                idx = 0
-                for r in reader:
-                    if iso_allow and r.get("country_iso", "").strip().upper() not in iso_allow:
-                        continue
-                    gid = int(r["geonames_id"])
-                    q = await session.execute(select(Location).where(Location.geonames_id == gid))
-                    loc_row = q.scalar_one_or_none()
-                    if loc_row is None:
-                        print(f"No hay locations.id para geonames_id={gid} — ejecute scripts/load_locations_csv.py", flush=True)
-                        continue
-                    loc_rows.append((float(loc_row.lat), float(loc_row.lon), loc_row.id, loc_row.name))
-                    idx += 1
-                    if args.limit > 0 and idx >= args.limit:
-                        break
-        else:
-            q = select(Location).order_by(asc(Location.country_iso), asc(Location.name))
-            if iso_allow:
-                q = q.where(Location.country_iso.in_(iso_allow))
-            if args.start_offset > 0:
-                q = q.offset(args.start_offset)
-            if args.limit > 0:
-                q = q.limit(args.limit)
-            r = await session.execute(q)
-            for loc_row in r.scalars().all():
-                loc_rows.append((float(loc_row.lat), float(loc_row.lon), loc_row.id, loc_row.name))
+        try:
+            loc_rows = await load_bulk_location_rows(session, args, repo)
+        except FileNotFoundError as fe:
+            print(f"CSV no encontrado: {fe}", flush=True)
+            return 1
 
         if args.dry_run:
             print(f"dry-run ubicaciones seleccionadas={len(loc_rows)}", flush=True)
@@ -159,6 +171,14 @@ async def cmd_firms_hotspots(args: argparse.Namespace) -> int:
     from services.read_through_storage import upsert_raw_payload
 
     load_dotenv()
+    repo = Path(__file__).resolve().parents[1]
+
+    has_point = args.lat is not None and args.lon is not None
+    has_one = (args.lat is None) ^ (args.lon is None)
+    if has_one:
+        print("Indique ambos --lat y --lon, u omita ambos para recorrer locations.", flush=True)
+        return 2
+
     async with session_scope() as session:
         if session is None:
             print("Defina DATABASE_URL.")
@@ -167,45 +187,72 @@ async def cmd_firms_hotspots(args: argparse.Namespace) -> int:
         if fid is None:
             return 1
 
-        job = IngestionJob(
-            source_id=fid,
-            job_type="firms_hotspots_area",
-            status="running",
-            cursor={
-                "lat": args.lat,
-                "lon": args.lon,
-                "radius_km": args.radius_km,
-                "days": args.days,
-                "source": args.source,
-            },
-            started_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-        )
-        session.add(job)
-        await session.flush()
+        async def run_one(lat: float, lon: float, location_id: UUID | None) -> None:
+            job = IngestionJob(
+                source_id=fid,
+                job_type="firms_hotspots_area",
+                status="running",
+                cursor={
+                    "lat": lat,
+                    "lon": lon,
+                    "radius_km": args.radius_km,
+                    "days": args.days,
+                    "source": args.source,
+                    "location_id": str(location_id) if location_id else None,
+                },
+                started_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            session.add(job)
+            await session.flush()
 
-        hotspots = await firms_svc.get_hotspots(
-            args.lat,
-            args.lon,
-            radius_km=args.radius_km,
-            days=args.days,
-            source=args.source,
-        )
-        params, qk = firms_hotspots_key(args.lat, args.lon, args.radius_km, args.days, args.source)
-        await upsert_raw_payload(
-            session,
-            source_id=fid,
-            query_key=qk,
-            params=params,
-            http_status=200,
-            body={"hotspots": hotspots},
-            job_id=job.id,
-            is_stale=False,
-        )
-        job.status = "completed"
-        job.updated_at = datetime.now(UTC)
-        await session.commit()
-        print(f"FIRMS job={job.id} hotspots={len(hotspots)}")
+            hotspots = await firms_svc.get_hotspots(
+                lat,
+                lon,
+                radius_km=args.radius_km,
+                days=args.days,
+                source=args.source,
+            )
+            params, qk = firms_hotspots_key(lat, lon, args.radius_km, args.days, args.source)
+            await upsert_raw_payload(
+                session,
+                source_id=fid,
+                query_key=qk,
+                params=params,
+                http_status=200,
+                body={"hotspots": hotspots},
+                job_id=job.id,
+                location_id=location_id,
+                is_stale=False,
+            )
+            job.status = "completed"
+            job.updated_at = datetime.now(UTC)
+            await session.commit()
+            print(f"FIRMS job={job.id} hotspots={len(hotspots)}", flush=True)
+
+        if has_point:
+            await run_one(args.lat, args.lon, None)
+            return 0
+
+        try:
+            loc_rows = await load_bulk_location_rows(session, args, repo)
+        except FileNotFoundError as fe:
+            print(f"CSV no encontrado: {fe}", flush=True)
+            return 1
+
+        if args.dry_run:
+            print(f"dry-run ubicaciones seleccionadas={len(loc_rows)}", flush=True)
+            return 0
+
+        total = len(loc_rows)
+        for i, (lat, lon, loc_id, name) in enumerate(loc_rows):
+            sleep_s = args.sleep_ms / 1000.0
+            if sleep_s > 0 and i > 0:
+                await asyncio.sleep(sleep_s)
+            print(f"[{i + 1}/{total}] {name} ({lat},{lon}) id={loc_id}", flush=True)
+            await run_one(lat, lon, loc_id)
+
+    print("FIRMS bulk finalizado.", flush=True)
     return 0
 
 
@@ -363,12 +410,30 @@ def main() -> None:
     p_bl.add_argument("--force", action="store_true")
     p_bl.set_defaults(func=cmd_locations_backfill_openmeteo)
 
-    p_f = sub.add_parser("firms-hotspots", help="Descarga FIRMS y raw_payload")
-    p_f.add_argument("--lat", type=float, required=True)
-    p_f.add_argument("--lon", type=float, required=True)
+    p_f = sub.add_parser(
+        "firms-hotspots",
+        help="Descarga FIRMS → raw_payload. Un punto (--lat/--lon) o bulk como locations-backfill-openmeteo",
+    )
+    p_f.add_argument(
+        "--lat",
+        type=float,
+        default=None,
+        help="Si se omite junto con --lon, recorre la tabla locations (mismo criterio que backfill Open‑Meteo)",
+    )
+    p_f.add_argument("--lon", type=float, default=None)
     p_f.add_argument("--radius-km", type=float, default=100)
     p_f.add_argument("--days", type=int, default=7)
     p_f.add_argument("--source", default="VIIRS_SNPP_NRT")
+    p_f.add_argument("--sleep-ms", type=int, default=400, help="Pausa entre ubicaciones (solo bulk)")
+    p_f.add_argument("--limit", type=int, default=0, help="0 = sin límite (solo bulk)")
+    p_f.add_argument("--start-offset", type=int, default=0, help="OFFSET SQL país,nombre (solo bulk)")
+    p_f.add_argument("--countries", default="", help="ISO separados coma (solo bulk)")
+    p_f.add_argument(
+        "--locations-csv",
+        default=None,
+        help="CSV GeoNames contra locations en DB (solo bulk)",
+    )
+    p_f.add_argument("--dry-run", action="store_true")
     p_f.set_defaults(func=cmd_firms_hotspots)
 
     p_n = sub.add_parser("normalize-climate", help="climate_monthly_cell desde raw archive")
