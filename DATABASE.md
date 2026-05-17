@@ -134,5 +134,7 @@ Definición operativa (`PPLC`, `PPLA` opcional, exclusión `BR`), GeoNames, CSV 
 ```
 climatifai-ingest openmeteo-yearly --lat -12.046 --lon -77.042 --from-year 2018 --to-year 2023
 climatifai-ingest firms-hotspots --lat -12.046 --lon -77.042
+# FIRMS para cada fila de `locations` (sin --lat/--lon; opc. --start-offset, --sleep-ms, --countries):
+climatifai-ingest firms-hotspots --sleep-ms 2500 --start-offset 51
 climatifai-ingest normalize-climate --source-key openmeteo_monthly_v1
 ```
