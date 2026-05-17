@@ -34,6 +34,8 @@ createdb climatifai
 PYTHONPATH=. .venv/bin/python -m alembic upgrade head
 ```
 
+La revisión **`002_locations`** crea tabla `locations` y añade `raw_payloads.location_id` enlazando ingestas por catálogo; ver [**`docs/locations.md`**](docs/locations.md).
+
 Alembic **no** tiene `--verbose`. Para volcar SQL **sin ejecutar** en BD: `upgrade head --sql`.
 
 Comprueba DNS/conexión y aplica migraciones con la misma carga de `.env`:
@@ -120,6 +122,12 @@ Si desde tu ordenador ves **`nodename nor servname provided, or not known`**, ha
 
 - Env: `QDRANT_URL=http://localhost:6333`.
 - Implementación en `services/vector_store.py`.
+
+## Catálogo de ubicaciones (LATAM, sin Brasil) + ingest Open‑Meteo
+
+Definición operativa (`PPLC`, `PPLA` opcional, exclusión `BR`), GeoNames, CSV `locations`, tabla `locations` y flujo CLI **backfill**:
+
+- [`docs/locations.md`](docs/locations.md)
 
 ## Ingester CLI
 

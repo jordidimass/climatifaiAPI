@@ -41,6 +41,30 @@ class IngestionJob(Base):
     source = relationship("DataSource", backref="ingestion_jobs")
 
 
+class Location(Base):
+    """Catálogo geográfico (GeoNames capitales LATAM típicamente). geo_id sintéticas < 0 desde API."""
+
+    __tablename__ = "locations"
+    __table_args__ = (
+        UniqueConstraint("geonames_id", name="uq_locations_geonames_id"),
+        UniqueConstraint("country_iso", "lat", "lon", name="uq_locations_country_lat_lon_rounded"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    geonames_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    country_iso: Mapped[str] = mapped_column(Text, nullable=False)
+    admin1_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False, default="capital")
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    ascii_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feature_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lat: Mapped[float] = mapped_column(Numeric(10, 5), nullable=False)
+    lon: Mapped[float] = mapped_column(Numeric(11, 5), nullable=False)
+    catalog_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class RawPayload(Base):
     __tablename__ = "raw_payloads"
     __table_args__ = (UniqueConstraint("source_id", "query_key", name="uq_raw_source_query_key"),)
@@ -54,6 +78,11 @@ class RawPayload(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("ingestion_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("locations.id", ondelete="SET NULL"),
         nullable=True,
     )
     query_key: Mapped[str] = mapped_column(Text, nullable=False)

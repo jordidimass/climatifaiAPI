@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import DataSource
 from services import openmeteo, scoring
+from services.locations_runtime import merge_location_meta, upsert_lazy_api_location
 from services.query_keys import agri_advisor_key, openmeteo_historical_key, openmeteo_projection_key
 from services.read_through_storage import fetch_raw_latest, policies, upsert_raw_payload
 
@@ -56,6 +57,7 @@ async def load_historical_with_cache(
     end_year: int,
     om_slug: str = "open_meteo",
     om_uuid: UUID | None = None,
+    lazy_country_iso: str | None = None,
 ) -> tuple[pl.DataFrame, dict[str, Any]]:
     params, qk = openmeteo_historical_key(lat, lon, start_year, end_year, archive_base_for_keys())
     pol_sec = policies()["openmeteo"]
@@ -65,8 +67,15 @@ async def load_historical_with_cache(
         fresh = await fetch_raw_latest(session, source_slug=om_slug, query_key=qk, max_age_sec=pol_sec)
         if fresh and isinstance(fresh.body, dict):
             df = openmeteo.df_from_daily_archive_payload(fresh.body)
-            meta["cache"]["historical"] = _fresh_wrap(fresh, stale=False)
+            meta["cache"]["historical"] = merge_location_meta(_fresh_wrap(fresh, stale=False), None)
             return df, meta
+
+    lazy_loc_uuid: UUID | None = None
+    if session is not None:
+        lazy_loc_uuid = await upsert_lazy_api_location(
+            session, country_iso_raw=lazy_country_iso, lat=lat, lon=lon
+        )
+        await session.flush()
 
     try:
         data = await openmeteo.fetch_historical_daily_json(lat, lon, start_year, end_year)
@@ -80,9 +89,11 @@ async def load_historical_with_cache(
                 http_status=200,
                 body=data,
                 is_stale=False,
+                location_id=lazy_loc_uuid,
             )
             await session.commit()
-            meta["cache"]["historical"] = _fresh_wrap(row, stale=False)
+            wrap = merge_location_meta(_fresh_wrap(row, stale=False), lazy_loc_uuid)
+            meta["cache"]["historical"] = wrap
         return df, meta
     except Exception as exc:
         meta["upstream_error"] = ("historical", str(exc))
@@ -91,7 +102,10 @@ async def load_historical_with_cache(
             if st and isinstance(st.body, dict):
                 df = openmeteo.df_from_daily_archive_payload(st.body)
                 await session.commit()
-                meta["cache"]["historical"] = _fresh_wrap(st, stale=True)
+                meta["cache"]["historical"] = merge_location_meta(
+                    _fresh_wrap(st, stale=True),
+                    lazy_loc_uuid,
+                )
                 return df, meta
         raise
 
@@ -107,6 +121,7 @@ async def load_projection_with_cache(
     model: str = "MRI_AGCM3_2_S",
     om_slug: str = "open_meteo",
     om_uuid: UUID | None = None,
+    lazy_country_iso: str | None = None,
 ) -> tuple[pl.DataFrame, dict[str, Any]]:
     params, qk = openmeteo_projection_key(lat, lon, scenario, start_year, end_year, model)
     pol_sec = policies()["openmeteo"]
@@ -116,8 +131,15 @@ async def load_projection_with_cache(
         fresh = await fetch_raw_latest(session, source_slug=om_slug, query_key=qk, max_age_sec=pol_sec)
         if fresh and isinstance(fresh.body, dict):
             df = openmeteo.df_from_climate_projection_payload(fresh.body)
-            meta["cache"]["projected"] = _fresh_wrap(fresh, stale=False)
+            meta["cache"]["projected"] = merge_location_meta(_fresh_wrap(fresh, stale=False), None)
             return df, meta
+
+    lazy_loc_uuid: UUID | None = None
+    if session is not None:
+        lazy_loc_uuid = await upsert_lazy_api_location(
+            session, country_iso_raw=lazy_country_iso, lat=lat, lon=lon
+        )
+        await session.flush()
 
     try:
         data = await openmeteo.fetch_climate_projection_json(lat, lon, scenario, start_year, end_year, model)
@@ -131,9 +153,13 @@ async def load_projection_with_cache(
                 http_status=200,
                 body=data,
                 is_stale=False,
+                location_id=lazy_loc_uuid,
             )
             await session.commit()
-            meta["cache"]["projected"] = _fresh_wrap(row, stale=False)
+            meta["cache"]["projected"] = merge_location_meta(
+                _fresh_wrap(row, stale=False),
+                lazy_loc_uuid,
+            )
         return df, meta
     except Exception as exc:
         meta["upstream_error"] = ("projected", str(exc))
@@ -142,7 +168,10 @@ async def load_projection_with_cache(
             if st and isinstance(st.body, dict):
                 df = openmeteo.df_from_climate_projection_payload(st.body)
                 await session.commit()
-                meta["cache"]["projected"] = _fresh_wrap(st, stale=True)
+                meta["cache"]["projected"] = merge_location_meta(
+                    _fresh_wrap(st, stale=True),
+                    lazy_loc_uuid,
+                )
                 return df, meta
         raise
 
@@ -164,6 +193,7 @@ async def load_advisor_payload_with_cache(
     hist_start_year: int,
     hist_end_year: int,
     adv_slug: str = "agri_cached",
+    lazy_country_iso: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     params, qk = agri_advisor_key(lat, lon, crop_id, season, hist_start_year, hist_end_year)
     pol_adv = policies()["agri_advisor"]
@@ -198,6 +228,7 @@ async def load_advisor_payload_with_cache(
             start_year=hist_start_year,
             end_year=hist_end_year,
             om_uuid=om_uuid,
+            lazy_country_iso=lazy_country_iso,
         )
         hcache = h_meta.get("cache", {}).get("historical")
         if isinstance(hcache, dict) and hcache.get("stale"):

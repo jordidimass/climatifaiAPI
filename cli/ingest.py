@@ -33,10 +33,8 @@ async def cmd_openmeteo_yearly(args: argparse.Namespace) -> int:
 
     from db.models import IngestionJob
     from db.session import session_scope
-    from services import openmeteo
-    from services.query_keys import openmeteo_historical_key
-    from services.read_through_agri import archive_base_for_keys, resolve_source_uuid
-    from services.read_through_storage import upsert_raw_payload
+    from services.ingest_openmeteo import run_openmeteo_archive_yearly
+    from services.read_through_agri import resolve_source_uuid
 
     load_dotenv()
     async with session_scope() as session:
@@ -48,63 +46,107 @@ async def cmd_openmeteo_yearly(args: argparse.Namespace) -> int:
             print("No se encontró data_sources.slug=open_meteo (¿migraciones aplicadas?).")
             return 1
 
-        if args.resume_job_id:
-            jr = await session.execute(
-                select(IngestionJob).where(IngestionJob.id == UUID(args.resume_job_id)),
-            )
-            job = jr.scalar_one_or_none()
-            if job is None:
-                print("Job no encontrado.")
-                return 1
-        else:
-            job = IngestionJob(
-                source_id=oid,
-                job_type=args.job_type,
-                status="running",
-                cursor={"last_completed_year": None, "lat": args.lat, "lon": args.lon},
-                started_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-            )
-            session.add(job)
-            await session.flush()
-
-        cy = dict(job.cursor)
-        lat, lon = float(cy.get("lat", args.lat)), float(cy.get("lon", args.lon))
-        last_done = cy.get("last_completed_year")
-
-        for year in range(args.from_year, args.to_year + 1):
-            if (
-                last_done is not None
-                and isinstance(last_done, int)
-                and year <= last_done
-                and not args.force
-            ):
-                continue
-            params, qk = openmeteo_historical_key(lat, lon, year, year, archive_base_for_keys())
-            data = await openmeteo.fetch_historical_daily_json(lat, lon, year, year)
-            await upsert_raw_payload(
+        try:
+            job = await run_openmeteo_archive_yearly(
                 session,
-                source_id=oid,
-                query_key=qk,
-                params=params,
-                http_status=200,
-                body=data,
-                job_id=job.id,
-                is_stale=False,
+                open_meteo_source_id=oid,
+                lat=args.lat,
+                lon=args.lon,
+                from_year=args.from_year,
+                to_year=args.to_year,
+                force=args.force,
+                resume_job_id=UUID(args.resume_job_id) if args.resume_job_id else None,
+                job_type=args.job_type,
+                location_id=UUID(args.location_id) if args.location_id else None,
             )
-            cy["last_completed_year"] = year
-            cy["lat"], cy["lon"] = lat, lon
-            job.cursor = cy
-            progress = dict(job.progress or {})
-            progress["years_done"] = int(progress.get("years_done", 0)) + 1
-            job.progress = progress
-            job.updated_at = datetime.now(UTC)
-            job.status = "partial" if year < args.to_year else "completed"
-            await session.commit()
-            print(f"año={year} OK — job cursor={job.cursor}")
+        except ValueError as ve:
+            print(str(ve), flush=True)
+            return 1
+        print(f"Fin — job={job.id} status={job.status} cursor={job.cursor}", flush=True)
+    return 0
 
-        await session.refresh(job)
-        print(f"Fin — job={job.id} status={job.status} cursor={job.cursor}")
+
+async def cmd_locations_backfill_openmeteo(args: argparse.Namespace) -> int:
+    import csv
+
+    from sqlalchemy import asc, select
+
+    from db.models import Location
+    from db.session import session_scope
+    from services.ingest_openmeteo import run_openmeteo_archive_yearly
+    from services.read_through_agri import resolve_source_uuid
+
+    load_dotenv()
+    iso_allow = {c.strip().upper() for c in args.countries.split(",") if c.strip()}
+    csv_path = Path(args.locations_csv) if args.locations_csv else None
+    repo = Path(__file__).resolve().parents[1]
+
+    async with session_scope() as session:
+        if session is None:
+            print("Defina DATABASE_URL.", flush=True)
+            return 1
+        oid = await resolve_source_uuid(session, "open_meteo")
+        if oid is None:
+            return 1
+
+        loc_rows: list[tuple[float, float, UUID | None, str]] = []
+        if csv_path:
+            csv_full = csv_path if csv_path.is_absolute() else repo / csv_path
+            if not csv_full.exists():
+                print(f"CSV no encontrado: {csv_full}", flush=True)
+                return 1
+            with csv_full.open(encoding="utf-8", newline="") as fh:
+                reader = csv.DictReader(fh)
+                idx = 0
+                for r in reader:
+                    if iso_allow and r.get("country_iso", "").strip().upper() not in iso_allow:
+                        continue
+                    gid = int(r["geonames_id"])
+                    q = await session.execute(select(Location).where(Location.geonames_id == gid))
+                    loc_row = q.scalar_one_or_none()
+                    if loc_row is None:
+                        print(f"No hay locations.id para geonames_id={gid} — ejecute scripts/load_locations_csv.py", flush=True)
+                        continue
+                    loc_rows.append((float(loc_row.lat), float(loc_row.lon), loc_row.id, loc_row.name))
+                    idx += 1
+                    if args.limit > 0 and idx >= args.limit:
+                        break
+        else:
+            q = select(Location).order_by(asc(Location.country_iso), asc(Location.name))
+            if iso_allow:
+                q = q.where(Location.country_iso.in_(iso_allow))
+            if args.start_offset > 0:
+                q = q.offset(args.start_offset)
+            if args.limit > 0:
+                q = q.limit(args.limit)
+            r = await session.execute(q)
+            for loc_row in r.scalars().all():
+                loc_rows.append((float(loc_row.lat), float(loc_row.lon), loc_row.id, loc_row.name))
+
+        if args.dry_run:
+            print(f"dry-run ubicaciones seleccionadas={len(loc_rows)}", flush=True)
+            return 0
+
+        total = len(loc_rows)
+        for i, (lat, lon, loc_id, name) in enumerate(loc_rows):
+            sleep_s = args.sleep_ms / 1000.0
+            if sleep_s > 0 and i > 0:
+                await asyncio.sleep(sleep_s)
+            print(f"[{i + 1}/{total}] {name} ({lat},{lon}) id={loc_id}", flush=True)
+            await run_openmeteo_archive_yearly(
+                session,
+                open_meteo_source_id=oid,
+                lat=lat,
+                lon=lon,
+                from_year=args.from_year,
+                to_year=args.to_year,
+                force=args.force,
+                resume_job_id=None,
+                job_type="openmeteo_archive_yearly_bulk_location",
+                location_id=loc_id,
+            )
+
+    print("Backfill finalizado.", flush=True)
     return 0
 
 
@@ -171,7 +213,7 @@ async def cmd_normalize_climate(args: argparse.Namespace) -> int:
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    from db.models import ClimateMonthlyCell, DataSource, RawPayload
+    from db.models import ClimateMonthlyCell, DataSource, Location, RawPayload
     from db.session import session_scope
     from services import openmeteo
 
@@ -179,13 +221,26 @@ async def cmd_normalize_climate(args: argparse.Namespace) -> int:
     async with session_scope() as session:
         if session is None:
             return 1
+
         stmt = (
             select(RawPayload)
             .join(DataSource, RawPayload.source_id == DataSource.id)
             .where(DataSource.slug == "open_meteo")
         )
+        country = (args.country or "").strip().upper()
+        if country:
+            stmt = stmt.join(Location, RawPayload.location_id == Location.id).where(
+                RawPayload.location_id.is_not(None),
+                Location.country_iso == country,
+            )
+
         r = await session.execute(stmt)
         rows = list(r.scalars().all())
+
+        if args.dry_run:
+            n_hist = sum(1 for rp in rows if (rp.params or {}).get("resource") == "historical_archive")
+            print(f"dry-run: raw_payload_open_meteo={len(rows)} historical_archive_candidates={n_hist}", flush=True)
+            return 0
 
         touched = 0
         src_key = args.source_key
@@ -229,7 +284,7 @@ async def cmd_normalize_climate(args: argparse.Namespace) -> int:
                 await session.execute(ins)
                 touched += 1
         await session.commit()
-        print(f"Filas escritas/intentadas: {touched}")
+        print(f"Filas escritas/intentadas: {touched}", flush=True)
     return 0
 
 
@@ -282,7 +337,31 @@ def main() -> None:
     p_om.add_argument("--job-type", default="openmeteo_archive_yearly_cell")
     p_om.add_argument("--resume-job-id", default=None)
     p_om.add_argument("--force", action="store_true")
+    p_om.add_argument(
+        "--location-id",
+        default=None,
+        help="UUID opcional en locations — se persiste como raw_payloads.location_id",
+    )
     p_om.set_defaults(func=cmd_openmeteo_yearly)
+
+    p_bl = sub.add_parser(
+        "locations-backfill-openmeteo",
+        help="Por cada fila de locations (o CSV contra DB) ejecuta ingest año a año Archive",
+    )
+    p_bl.add_argument("--from-year", type=int, required=True)
+    p_bl.add_argument("--to-year", type=int, required=True)
+    p_bl.add_argument("--sleep-ms", type=int, default=400)
+    p_bl.add_argument("--limit", type=int, default=0, help="0 = sin límite")
+    p_bl.add_argument("--start-offset", type=int, default=0, help="OFFSET SQL respecto orden país,nombre")
+    p_bl.add_argument("--countries", default="", help="ISO separados coma (filtro dentro del catálogo)")
+    p_bl.add_argument(
+        "--locations-csv",
+        default=None,
+        help="Opcional CSV (mismo formato que GeoNames extractor); resuelve geonames_id → locations en DB",
+    )
+    p_bl.add_argument("--dry-run", action="store_true")
+    p_bl.add_argument("--force", action="store_true")
+    p_bl.set_defaults(func=cmd_locations_backfill_openmeteo)
 
     p_f = sub.add_parser("firms-hotspots", help="Descarga FIRMS y raw_payload")
     p_f.add_argument("--lat", type=float, required=True)
@@ -294,6 +373,12 @@ def main() -> None:
 
     p_n = sub.add_parser("normalize-climate", help="climate_monthly_cell desde raw archive")
     p_n.add_argument("--source-key", default="openmeteo_monthly_v1")
+    p_n.add_argument(
+        "--country",
+        default=None,
+        help="Sólo payloads con raw_payloads.location_id y locations.country_iso = este ISO (ej. PE)",
+    )
+    p_n.add_argument("--dry-run", action="store_true")
     p_n.set_defaults(func=cmd_normalize_climate)
 
     p_h = sub.add_parser("hf-register", help="Registra archivo en data_artifacts")
