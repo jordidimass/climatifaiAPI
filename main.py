@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 from routers import agri, fires, support
+from gql.schema import graphql_router
 
 
 @asynccontextmanager
@@ -40,6 +41,7 @@ app.add_middleware(
 app.include_router(fires.router, prefix="/fires", tags=["fires"])
 app.include_router(agri.router, prefix="/agri", tags=["agri"])
 app.include_router(support.router, prefix="/support", tags=["support"])
+app.include_router(graphql_router, prefix="/graphql", tags=["graphql"])
 
 
 @app.get("/health", tags=["meta"])

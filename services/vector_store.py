@@ -28,7 +28,8 @@ class QdrantVectorStore(VectorStore):
             from qdrant_client.models import Distance, PointStruct, VectorParams
 
             url = os.getenv("QDRANT_URL", url_env_default)
-            self._client = QdrantClient(url=url)
+            api_key = os.getenv("QDRANT_API_KEY")  # None para local, requerido en Cloud
+            self._client = QdrantClient(url=url, api_key=api_key, timeout=60)
             self._collection = collection
             self._Distance = Distance
             self._PointStruct = PointStruct
