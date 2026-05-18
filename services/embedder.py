@@ -1,41 +1,63 @@
 """
-Embedder async — usa ClimateBERT (distilroberta-base-climate-f) via sentence-transformers.
+Embedder async — usa ClimateBERT via HuggingFace Inference API.
 
-El modelo se descarga la primera vez (~300MB) y queda cacheado en ~/.cache/huggingface.
-Todas las llamadas pesadas corren en asyncio.to_thread para no bloquear el event loop.
+Sin PyTorch local. Requiere HF_TOKEN en env (plan gratuito de HF es suficiente).
+Fallback: si HF_TOKEN no está, devuelve vector de ceros (RAG desactivado).
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
-from functools import lru_cache
+import statistics
 
-MODEL_NAME = os.getenv(
-    "EMBED_MODEL",
-    "climatebert/distilroberta-base-climate-f",
-)
+import httpx
 
-EMBED_DIM = 768  # distilroberta hidden size
+MODEL_NAME = os.getenv("EMBED_MODEL", "climatebert/distilroberta-base-climate-f")
+EMBED_DIM = 768
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
-
-@lru_cache(maxsize=1)
-def _get_model():
-    """Carga el modelo una sola vez (singleton)."""
-    from sentence_transformers import SentenceTransformer
-
-    return SentenceTransformer(MODEL_NAME)
+_HF_URL = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
+_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
 
-def _embed_sync(texts: list[str]) -> list[list[float]]:
-    model = _get_model()
-    vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-    return [v.tolist() for v in vecs]
+def _mean_pool(token_vecs: list[list[float]]) -> list[float]:
+    """Promedia los vectores de tokens para obtener un embedding de oración."""
+    if not token_vecs:
+        return [0.0] * EMBED_DIM
+    dim = len(token_vecs[0])
+    return [statistics.mean(v[i] for v in token_vecs) for i in range(dim)]
+
+
+def _normalize(vec: list[float]) -> list[float]:
+    norm = sum(x * x for x in vec) ** 0.5
+    if norm == 0:
+        return vec
+    return [x / norm for x in vec]
 
 
 async def embed(texts: list[str]) -> list[list[float]]:
-    """Embebe una lista de textos. Devuelve vectores normalizados [dim=768]."""
-    return await asyncio.to_thread(_embed_sync, texts)
+    """Embebe una lista de textos via HF Inference API. Devuelve vectores normalizados."""
+    if not HF_TOKEN:
+        return [[0.0] * EMBED_DIM for _ in texts]
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            _HF_URL,
+            headers=_HEADERS,
+            json={"inputs": texts, "options": {"wait_for_model": True}},
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+
+    results: list[list[float]] = []
+    for item in raw:
+        if isinstance(item[0], list):
+            # token-level embeddings → mean pool
+            vec = _mean_pool(item)
+        else:
+            vec = item
+        results.append(_normalize(vec))
+    return results
 
 
 async def embed_one(text: str) -> list[float]:
