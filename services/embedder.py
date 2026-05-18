@@ -7,57 +7,42 @@ Fallback: si HF_TOKEN no está, devuelve vector de ceros (RAG desactivado).
 
 from __future__ import annotations
 
+import asyncio
 import os
-import statistics
+from functools import lru_cache
 
-import httpx
-
-MODEL_NAME = os.getenv("EMBED_MODEL", "climatebert/distilroberta-base-climate-f")
+MODEL_NAME = os.getenv("EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
 EMBED_DIM = 768
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 
-_HF_URL = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
-_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+
+@lru_cache(maxsize=1)
+def _get_client():
+    from huggingface_hub import InferenceClient
+    return InferenceClient(token=HF_TOKEN)
 
 
-def _mean_pool(token_vecs: list[list[float]]) -> list[float]:
-    """Promedia los vectores de tokens para obtener un embedding de oración."""
-    if not token_vecs:
-        return [0.0] * EMBED_DIM
-    dim = len(token_vecs[0])
-    return [statistics.mean(v[i] for v in token_vecs) for i in range(dim)]
-
-
-def _normalize(vec: list[float]) -> list[float]:
-    norm = sum(x * x for x in vec) ** 0.5
-    if norm == 0:
-        return vec
-    return [x / norm for x in vec]
+def _embed_sync(texts: list[str]) -> list[list[float]]:
+    client = _get_client()
+    result = client.feature_extraction(texts, model=MODEL_NAME)
+    # result puede ser ndarray o lista; lo normalizamos a list[list[float]]
+    import numpy as np
+    arr = np.array(result)
+    # Si viene con dimensión de tokens (batch, tokens, dim) → mean pool
+    if arr.ndim == 3:
+        arr = arr.mean(axis=1)
+    # Normalizar cada vector
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)
+    arr = arr / norms
+    return arr.tolist()
 
 
 async def embed(texts: list[str]) -> list[list[float]]:
     """Embebe una lista de textos via HF Inference API. Devuelve vectores normalizados."""
     if not HF_TOKEN:
         return [[0.0] * EMBED_DIM for _ in texts]
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            _HF_URL,
-            headers=_HEADERS,
-            json={"inputs": texts, "options": {"wait_for_model": True}},
-        )
-        resp.raise_for_status()
-        raw = resp.json()
-
-    results: list[list[float]] = []
-    for item in raw:
-        if isinstance(item[0], list):
-            # token-level embeddings → mean pool
-            vec = _mean_pool(item)
-        else:
-            vec = item
-        results.append(_normalize(vec))
-    return results
+    return await asyncio.to_thread(_embed_sync, texts)
 
 
 async def embed_one(text: str) -> list[float]:
